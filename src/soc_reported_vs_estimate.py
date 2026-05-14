@@ -76,7 +76,7 @@ def vectorised_soc_estimation(
     lut_temp = lut["cell_temperatures"].to_numpy()
     lut_curr = lut["current_average"].to_numpy()
     lut_volt = lut["cell_voltages_mean"].to_numpy()
-    lut_dod  = lut["dod"].to_numpy().astype(int)
+    lut_dod  = lut["dod"].to_numpy()
 
     temps    = df["cell_temperatures"].to_numpy()
     currents = df["current_average"].to_numpy()
@@ -158,7 +158,7 @@ SELECT DISTINCT
 FROM analytics.batteries_v3
 WHERE device_serial = '{serial}'
   AND cell_quantity = {num_cells}
-  AND time_stamp >= timestamp '2023-01-01'
+  AND time_stamp >= timestamp '2026-04-01'
 ORDER BY sequence_number ASC
 """
 
@@ -195,7 +195,7 @@ def prepare_base(df_raw: pl.DataFrame, capacity_ah: float, num_cells: int) -> pl
         .with_columns(
             current_average=((pl.col("current_scaled") // 5 * 5).cast(pl.Float64))
         )
-        .filter(~pl.col("current_average").is_between(-5,0))
+        # .filter(~pl.col("current_average").is_between(-20,20, closed="both"))
     )
 
 
@@ -245,7 +245,7 @@ def build_wide_result(
             .with_columns(
                 rolling_soc_mean=(
                     ((pl.col("soc_max") + pl.col("soc_min")) / 2)
-                    .rolling_mean(window_size=WINDOW_SIZE_SOC, weights=WEIGHTS, min_samples=1)
+                    .rolling_mean(window_size=WINDOW_SIZE_SOC,min_samples=WINDOW_SIZE_SOC-1)
                 ),
             )
             .sort("sequence_number")
@@ -258,7 +258,7 @@ def build_wide_result(
         seq_base = seq_base.join(cell_estimate, on="sequence_number", how="left")
         print(f"  Cell {i}/{num_cells} done", end="\r", flush=True)
 
-    print()
+    # print()
 
     # Add day + within-day offset
     return (
