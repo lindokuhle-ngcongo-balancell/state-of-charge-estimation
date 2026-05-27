@@ -27,7 +27,7 @@ import plotly.graph_objects as go
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 WINDOW_SIZE      = 1441
-WINDOW_SIZE_SOC  = 61
+WINDOW_SIZE_SOC  = 7
 LUT_REFERENCE_CAPACITY = 277.0
 
 SOH_ANIMATE_MIN  = 95
@@ -160,7 +160,7 @@ SELECT DISTINCT
 FROM analytics.batteries_v3
 WHERE device_serial = '{serial}'
   AND cell_quantity = {num_cells}
-  AND time_stamp >= timestamp '2021-01-01'
+  AND time_stamp >= timestamp '2022-01-01'
 ORDER BY sequence_number ASC
 """
 
@@ -350,7 +350,7 @@ def process_battery(
             .with_columns(
                 rolling_soc_mean=(
                     ((pl.col("soc_max") + pl.col("soc_min")) / 2)
-                    .rolling_mean(window_size=WINDOW_SIZE_SOC, weights=make_weights(WINDOW_SIZE_SOC, decay=0.9),  min_samples=WINDOW_SIZE_SOC-1)
+                    .rolling_mean(window_size=WINDOW_SIZE_SOC,  min_samples=WINDOW_SIZE_SOC-1)
                 ),
             )
             .filter(pl.col("current_average")<= current_threshold)
@@ -362,7 +362,7 @@ def process_battery(
             )
             .with_columns(
                 soh_estimate_rolling=pl.col("soh_estimate_raw")
-                    .rolling_mean(window_size=WINDOW_SIZE,  weights=make_weights(WINDOW_SIZE, decay=0.7),min_samples=WINDOW_SIZE-1),
+                    .rolling_mean(window_size=WINDOW_SIZE, min_samples=WINDOW_SIZE-1),
                 soh_estimate_nulled=pl.when(pl.col("cell_voltages") < 3280)
                     .then(pl.col("soh_estimate_raw"))
                     .otherwise(None),

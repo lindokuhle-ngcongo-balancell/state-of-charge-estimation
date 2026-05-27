@@ -1,16 +1,34 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.venv/
 
-# Virtual environments
-.venv
-# Files and logs
+# Environment — never commit real credentials
+.env
+
+# Runtime outputs (data files, logs, results)
 data/
 logs/
-*.csv
+results/
+plots/
 *.log
+*.log.*
 *.html
+
+# CSV and JSON are gitignored by default; exceptions are whitelisted below
+*.csv
+*.json
+
+# Allow test fixtures to be committed
+!tests/fixtures/*.csv
+!tests/fixtures/*.json
+
+# Notebooks (work in progress; not part of the package)
+*.ipynb
+
+# Misc
+*.docx

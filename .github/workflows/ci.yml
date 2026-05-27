@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  ci:
+    name: "Python ${{ matrix.python-version }}"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # ── Install ────────────────────────────────────────────────────────────
+      - name: Install package + dev dependencies
+        run: pip install -e ".[dev]"
+
+      # ── Lint & format ──────────────────────────────────────────────────────
+      - name: Ruff — lint
+        run: ruff check soc_estimation/ tests/
+
+      - name: Ruff — format check
+        run: ruff format --check soc_estimation/ tests/
+
+      # ── Tests ──────────────────────────────────────────────────────────────
+      - name: Pytest
+        run: pytest tests/ --cov=soc_estimation --cov-report=term-missing
