@@ -10,6 +10,7 @@ wheels/
 .venv
 # Files and logs
 data/
+logs/
 *.csv
 *.log
 *.html
