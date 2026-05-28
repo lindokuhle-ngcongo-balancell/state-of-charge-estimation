@@ -106,17 +106,12 @@ def create_athena_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Estimate SOC from AWS Athena using OCV lookup table.\n\n"
-            "Connection parameters (--database, --table, --aws_profile, --s3_output)\n"
-            "can also be set via environment variables or a .env file.\n"
-            "See .env.example for the full list."
+            "Connection parameters can also be set via environment variables or a\n"
+            ".env file (see .env.example).  CLI flags always take precedence."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument(
-        "--serial",
-        required=True,
-        help="Battery serial number (e.g., P34-000092)",
-    )
+    p.add_argument("--serial", required=True, help="Battery serial number (e.g. P24-000104)")
     p.add_argument(
         "--lut_csv",
         required=True,
@@ -126,13 +121,13 @@ def create_athena_parser() -> argparse.ArgumentParser:
     p.add_argument("--num_cells", required=True, type=int, help="Number of cells")
     p.add_argument(
         "--database",
-        default=env_cfg.database or "battery_data",
-        help="Athena database name [env: ATHENA_DATABASE]",
+        default=env_cfg.database or "analytics",
+        help="Athena database [env: ATHENA_DATABASE]",
     )
     p.add_argument(
         "--table",
-        default=env_cfg.table or "measurements",
-        help="Athena table name [env: ATHENA_TABLE]",
+        default=env_cfg.table or "batteries_v3",
+        help="Athena table [env: ATHENA_TABLE]",
     )
     p.add_argument(
         "--aws_profile",
@@ -140,9 +135,24 @@ def create_athena_parser() -> argparse.ArgumentParser:
         help="AWS named profile [env: AWS_PROFILE]",
     )
     p.add_argument(
+        "--workgroup",
+        default=env_cfg.workgroup,
+        help="Athena workgroup [env: ATHENA_WORKGROUP, default: data_engineering]",
+    )
+    p.add_argument(
         "--s3_output",
         default=env_cfg.s3_output,
-        help="S3 URI for Athena query results [env: ATHENA_S3_OUTPUT]",
+        help="S3 URI for query results — omit to use the workgroup default [env: ATHENA_S3_OUTPUT]",
+    )
+    p.add_argument(
+        "--start_date",
+        default=None,
+        help="Only fetch rows on or after this date (YYYY-MM-DD)",
+    )
+    p.add_argument(
+        "--end_date",
+        default=None,
+        help="Only fetch rows on or before this date (YYYY-MM-DD, inclusive)",
     )
     p.add_argument(
         "--rest_current_a",
@@ -183,10 +193,14 @@ def run_athena_estimation(args: argparse.Namespace) -> None:
         data_source = AthenaDataSource(
             serial=args.serial,
             num_cells=args.num_cells,
+            capacity_ah=args.capacity,
             database=args.database,
             table=args.table,
             aws_profile=args.aws_profile,
+            workgroup=args.workgroup,
             s3_output=args.s3_output,
+            start_date=args.start_date,
+            end_date=args.end_date,
             logger=logger,
         )
         engine = SOCEstimationEngine(

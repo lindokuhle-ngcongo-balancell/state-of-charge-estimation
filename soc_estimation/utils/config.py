@@ -31,7 +31,8 @@ class AthenaConfig:
     region: str
     database: str
     table: str
-    s3_output: str
+    workgroup: str
+    s3_output: str | None  # optional — workgroup default is used when None
 
 
 def get_athena_config() -> AthenaConfig:
@@ -41,5 +42,6 @@ def get_athena_config() -> AthenaConfig:
         region=os.getenv("AWS_REGION", "eu-west-1"),
         database=os.getenv("ATHENA_DATABASE", ""),
         table=os.getenv("ATHENA_TABLE", ""),
-        s3_output=os.getenv("ATHENA_S3_OUTPUT", ""),
+        workgroup=os.getenv("ATHENA_WORKGROUP", "data_engineering"),
+        s3_output=os.getenv("ATHENA_S3_OUTPUT") or None,
     )
