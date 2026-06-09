@@ -4,8 +4,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from soc_estimation.data_sources import AthenaDataSource, CSVDataSource, MQTTDataSource
+from soc_estimation.data_sources import AthenaDataSource, CSVDataSource
 from soc_estimation.engine import SOCEstimationEngine
+from soc_estimation.mqtt_bem_logger import main as mqtt_bem_main
 from soc_estimation.utils import setup_logger
 from soc_estimation.utils.config import get_athena_config
 
@@ -221,99 +222,7 @@ def run_athena_estimation(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def create_mqtt_parser() -> argparse.ArgumentParser:
-    """Create argument parser for MQTT input."""
-    p = argparse.ArgumentParser(
-        description="Real-time SOC estimation from MQTT messages",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument("--broker", required=True, help="MQTT broker hostname")
-    p.add_argument("--port", default=1883, type=int, help="MQTT port (default 1883)")
-    p.add_argument(
-        "--gateway",
-        action="append",
-        dest="gateways",
-        help="Gateway ID (can be specified multiple times, e.g., --gateway gw-000027 --gateway gw-000105)",
-    )
-    p.add_argument(
-        "--bem_ids",
-        type=int,
-        nargs="+",
-        default=[1, 2, 3, 4],
-        help="BEM IDs to listen to (default: 1 2 3 4)",
-    )
-    p.add_argument(
-        "--lut_csv",
-        required=True,
-        help="OCV LUT CSV path (must have 'soc' and 'voltage' columns)",
-    )
-    p.add_argument("--capacity", required=True, type=float, help="Battery capacity (Ah)")
-    p.add_argument("--num_cells", required=True, type=int, help="Number of cells")
-    p.add_argument("--username", default=None, help="MQTT username (optional)")
-    p.add_argument("--password", default=None, help="MQTT password (optional)")
-    p.add_argument(
-        "--use_tls",
-        action="store_true",
-        help="Enable TLS for MQTT",
-    )
-    p.add_argument(
-        "--output_dir",
-        default="./mqtt_soc_logs",
-        help="Directory for per-BEM CSV logs (default ./mqtt_soc_logs)",
-    )
-    p.add_argument(
-        "--log_file",
-        default="soc_estimate_mqtt.log",
-        help="Log file path (default soc_estimate_mqtt.log)",
-    )
-    return p
-
-
-def run_mqtt_estimation(args: argparse.Namespace) -> None:
-    """Run real-time SOC estimation from MQTT messages."""
-
-    logger = setup_logger("soc_estimation_mqtt", args.log_file)
-    logger.info("------ SOC Estimation (MQTT) Start ------")
-    logger.info("Args: %s", vars(args))
-
-    # Validate inputs
-    if not Path(args.lut_csv).exists():
-        logger.error("OCV LUT not found: %s", args.lut_csv)
-        sys.exit(1)
-
-    if not args.gateways:
-        logger.error("No gateways specified (use --gateway)")
-        sys.exit(1)
-
-    # Create data source
-    try:
-        data_source = MQTTDataSource(
-            broker=args.broker,
-            gateway_ids=args.gateways,
-            bem_ids=args.bem_ids,
-            num_cells=args.num_cells,
-            port=args.port,
-            use_tls=args.use_tls,
-            username=args.username,
-            password=args.password,
-            logger=logger,
-        )
-
-        engine = SOCEstimationEngine(
-            data_source=data_source,
-            num_cells=args.num_cells,
-            capacity_ah=args.capacity,
-            ocv_lut_path=args.lut_csv,
-            logger=logger,
-        )
-
-        logger.info("Starting real-time SOC estimation...")
-        # Note: MQTT is async; in production, integrate with event loop
-        engine.process_all_records(output_csv=None)
-
-    except Exception as e:
-        logger.error("Error: %s", e, exc_info=True)
-        sys.exit(1)
+# MQTT entry point: see soc_estimation.mqtt_bem_logger
 
 
 def main_csv():
@@ -331,10 +240,8 @@ def main_athena():
 
 
 def main_mqtt():
-    """Entry point for MQTT CLI."""
-    parser = create_mqtt_parser()
-    args = parser.parse_args()
-    run_mqtt_estimation(args)
+    """Entry point for MQTT CLI (parquet-LUT BEM logger, see mqtt_bem_logger)."""
+    mqtt_bem_main()
 
 
 if __name__ == "__main__":
