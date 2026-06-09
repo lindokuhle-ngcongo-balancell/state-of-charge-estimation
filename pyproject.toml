@@ -1,25 +1,61 @@
 [project]
-name = "state-of-charge-estimation"
+name = "soc-estimation"
 version = "0.1.0"
-description = "Add your description here"
+description = "Battery State of Charge estimation using OCV lookup tables with rest-window gating. Supports CSV, AWS Athena, and real-time MQTT data sources."
 readme = "README.md"
-requires-python = "==3.13.5"
+requires-python = ">=3.11"
+authors = [
+    {name = "Battery Analytics Team"},
+]
+license = {text = "MIT"}
 dependencies = [
     "aiomqtt>=2.5.1",
     "awswrangler>=3.9.0",
     "boto3>=1.42.91",
-    "nbformat>=5.10.4",
-    "numpy>=2.4.4",
-    "pandas<3.0.0",
-    "plotly>=6.7.0",
-    "polars>=1.40.1",
-    "pyarrow>=24.0.0",
-    "pywavelets>=1.9.0",
-    "scikit-learn>=1.8.0",
-    "xgboost>=3.2.0",
+    "polars>=1.0.0",
+    "numpy>=1.20.0",
+    "pandas>=1.0.0",
+    "python-dotenv>=1.0.0",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
-    "ipykernel>=7.2.0",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
 ]
+
+[project.scripts]
+soc-estimate-csv    = "soc_estimation.cli:main_csv"
+soc-estimate-athena = "soc_estimation.cli:main_athena"
+soc-estimate-mqtt   = "soc_estimation.cli:main_mqtt"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# ── Ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["soc_estimation"]
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"

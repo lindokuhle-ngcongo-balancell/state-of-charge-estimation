@@ -54,7 +54,6 @@ WINDOW_SIZE            = 1441
 WINDOW_SIZE_SOC        = 7
 LUT_REFERENCE_CAPACITY = 277.0   # Ah — capacity the LUT was built for
 
-
 # ── LUT ───────────────────────────────────────────────────────────────────────
 
 def load_lut(lut_path: str) -> pl.DataFrame:
@@ -168,8 +167,8 @@ SELECT DISTINCT
 FROM analytics.batteries_v3
 WHERE device_serial IN ({serial_list})
   AND cell_quantity = {num_cells}
-  AND time_stamp >= timestamp '2024-01-01'
-ORDER BY device_serial, sequence_number ASC
+  AND time_stamp >= timestamp '2025-01-01' and time_stamp < timestamp '2026-06-01'
+
 """
 
 
@@ -179,9 +178,12 @@ def fetch_chunk(
 ) -> pl.DataFrame:
     """Fetch a single chunk of serials from Athena."""
     sql   = build_group_query(serials, num_cells)
+    
+    boto3.setup_default_session(profile_name="infra_dev")
     pd_df = wr.athena.read_sql_query(
         sql=sql, database="scratch", workgroup="data_engineering"
     )
+    # boto3.client("athena").close()  # free connection pool immediately
     return pl.from_pandas(pd_df) if not pd_df.empty else pl.DataFrame()
 
 
@@ -406,7 +408,7 @@ def main():
     parser.add_argument("--output",            default="soh_summary.csv", help="Output CSV path (default: soh_summary.csv)")
     parser.add_argument("--lut_path",          required=True,  help="Path to LUT parquet file")
     parser.add_argument("--current_threshold", default=-100.0, type=float, help="current_average filter threshold (default: -100)")
-    parser.add_argument("--chunk_size",        default=10,     type=int,   help="Max serials per Athena query (default: 10)")
+    parser.add_argument("--chunk_size",        default=50,     type=int,   help="Max serials per Athena query (default: 10)")
     parser.add_argument("--aws_profile",       default="infra_dev",        help="AWS profile name (default: infra_dev)")
     args = parser.parse_args()
 
@@ -427,7 +429,7 @@ def main():
         pl.col("device_serial").cast(pl.Utf8),
     )
 
-    boto3.setup_default_session(profile_name=args.aws_profile)
+  
 
     print(f"Loading LUT from {args.lut_path} …")
     df_lut = load_lut(args.lut_path)
