@@ -16,13 +16,13 @@ from soc_estimation.core import (
     voltage_to_soc,
 )
 from soc_estimation.data_sources import (
+    AthenaDataSource,
     BatteryDataRecord,
     CSVDataSource,
-    AthenaDataSource,
     DataSource,
 )
 from soc_estimation.engine import SOCEstimationEngine
-from soc_estimation.utils import setup_logger, load_ocv_lut
+from soc_estimation.utils import load_ocv_lut, setup_logger
 
 __version__ = "0.1.0"
 

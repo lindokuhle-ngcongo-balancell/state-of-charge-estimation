@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import logging.handlers
@@ -60,12 +61,10 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import aiomqtt
 import numpy as np
 import polars as pl
-
 
 WINDOW_SIZE_SOC = 13
 MIN_SAMPLES_ROLLING = WINDOW_SIZE_SOC - 1
@@ -89,9 +88,7 @@ def load_lut(lut_path: str) -> pl.DataFrame:
         .group_by(["cell_temperatures", "current_average", "dod"])
         .agg(pl.col("cell_voltages_mean").mean().round(0).alias("cell_voltages_mean"))
         .with_columns(
-            pl.col("dod").count()
-            .over(["cell_temperatures", "current_average"])
-            .alias("dod_count")
+            pl.col("dod").count().over(["cell_temperatures", "current_average"]).alias("dod_count")
         )
         .filter(pl.col("dod_count") >= 90)
         .drop("dod_count")
@@ -114,9 +111,7 @@ def make_lut_arrays(lut: pl.DataFrame) -> LutArrays:
     dod = lut["dod"].to_numpy().astype(float)
 
     unique_temps = np.unique(temp)
-    available_currents = {
-        float(t): np.unique(curr[temp == t]) for t in unique_temps
-    }
+    available_currents = {float(t): np.unique(curr[temp == t]) for t in unique_temps}
 
     bin_curves: dict[tuple[float, float], tuple[np.ndarray, np.ndarray]] = {}
     for t in unique_temps:
@@ -159,9 +154,7 @@ def estimate_cell_soc(
     if current_bucket_scaled is None or np.isnan(current_bucket_scaled):
         matched_curr = float(avail[np.argmin(np.abs(avail))])
     else:
-        matched_curr = float(
-            avail[np.argmin(np.abs(avail - current_bucket_scaled))]
-        )
+        matched_curr = float(avail[np.argmin(np.abs(avail - current_bucket_scaled))])
 
     r_mohm = resistance_ohm * 1000.0
     v_adj = cell_voltage_mv - r_mohm * (current_bucket_scaled - matched_curr)
@@ -180,10 +173,13 @@ def estimate_cell_soc(
     else:
         flipped_v = bin_volt[::-1]
         flipped_d = bin_dod[::-1]
-        idx_right = int(np.clip(
-            np.searchsorted(flipped_v, v_adj, side="left"),
-            0, len(flipped_v) - 1,
-        ))
+        idx_right = int(
+            np.clip(
+                np.searchsorted(flipped_v, v_adj, side="left"),
+                0,
+                len(flipped_v) - 1,
+            )
+        )
         idx_left = int(np.clip(idx_right - 1, 0, len(flipped_v) - 1))
         d1, d2 = float(flipped_d[idx_left]), float(flipped_d[idx_right])
         dod_lo = max(min(d1, d2), 0.0)
@@ -234,21 +230,24 @@ class BemLogger:
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:
-        self.cell_rolling = [
-            deque(maxlen=WINDOW_SIZE_SOC) for _ in range(self.num_cells)
-        ]
+        self.cell_rolling = [deque(maxlen=WINDOW_SIZE_SOC) for _ in range(self.num_cells)]
 
         cell_v_cols = [f"cellVoltage_{i}" for i in range(1, self.num_cells + 1)]
         soc_cols: list[str] = []
         for i in range(1, self.num_cells + 1):
             soc_cols += [f"soc_min_{i}", f"soc_max_{i}", f"soc_rolling_{i}"]
 
-        header = ",".join([
-            "sequence_number", "datestamp", "soc",
-            "bemCurrentInst", "extTemp",
-            *cell_v_cols,
-            *soc_cols,
-        ])
+        header = ",".join(
+            [
+                "sequence_number",
+                "datestamp",
+                "soc",
+                "bemCurrentInst",
+                "extTemp",
+                *cell_v_cols,
+                *soc_cols,
+            ]
+        )
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         fname = self.log_dir / (
@@ -275,8 +274,13 @@ class BemLogger:
         cells = payload.get("cells") or []
 
         if seq is None or bem_curr_ma is None or not cells:
-            LOG.warning("[%s/bem %d] malformed datagram (seq=%s, cells=%d), skipping",
-                        self.gateway, self.bem_id, seq, len(cells))
+            LOG.warning(
+                "[%s/bem %d] malformed datagram (seq=%s, cells=%d), skipping",
+                self.gateway,
+                self.bem_id,
+                seq,
+                len(cells),
+            )
             return
 
         current_a = bem_curr_ma / 1000.0
@@ -302,9 +306,7 @@ class BemLogger:
                 soc_columns += ["", "", ""]
                 continue
 
-            t_bucket = (
-                float(np.floor(t_c / 5.0) * 5.0) if t_c is not None else float("nan")
-            )
+            t_bucket = float(np.floor(t_c / 5.0) * 5.0) if t_c is not None else float("nan")
             soc_min, soc_max = estimate_cell_soc(
                 cell_voltage_mv=float(v_mv),
                 cell_temp_bucket=t_bucket,
@@ -342,8 +344,8 @@ async def gateway_subscriber(
     num_bems: int,
     broker: str,
     port: int,
-    username: Optional[str],
-    password: Optional[str],
+    username: str | None,
+    password: str | None,
     capacity_ah: float,
     num_cells: int,
     lut: LutArrays,
@@ -394,23 +396,18 @@ async def gateway_subscriber(
                     try:
                         payload = json.loads(msg.payload.decode("utf-8"))
                     except Exception:
-                        LOG.exception("[%s/bem %d] payload parse failed",
-                                      gateway, bem_id)
+                        LOG.exception("[%s/bem %d] payload parse failed", gateway, bem_id)
                         continue
                     try:
                         bems[bem_id].on_datagram(payload)
                     except Exception:
-                        LOG.exception("[%s/bem %d] datagram processing failed",
-                                      gateway, bem_id)
+                        LOG.exception("[%s/bem %d] datagram processing failed", gateway, bem_id)
         except aiomqtt.MqttError as e:
             if stop.is_set():
                 break
-            LOG.warning("[%s] MQTT error: %s — reconnecting in %.1fs",
-                        gateway, e, backoff)
-            try:
+            LOG.warning("[%s] MQTT error: %s — reconnecting in %.1fs", gateway, e, backoff)
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=backoff)
-            except asyncio.TimeoutError:
-                pass
             backoff = min(backoff * 2.0, 60.0)
 
 
@@ -481,10 +478,9 @@ async def main_async(args: argparse.Namespace) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # Windows event loop does not support add_signal_handler.
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            pass  # Windows
 
     tasks = [
         asyncio.create_task(
@@ -522,26 +518,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="MQTT BEM SoC logger (per-cell, per-BEM, daily-rotated CSV).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--gateway", action="append", required=True,
-                   help="Gateway name (repeat for multiple, e.g. gw-000105)")
-    p.add_argument("--num-bems", type=int, required=True,
-                   help="BEM bus addresses 1..N to subscribe to")
+    p.add_argument(
+        "--gateway",
+        action="append",
+        required=True,
+        help="Gateway name (repeat for multiple, e.g. gw-000105)",
+    )
+    p.add_argument(
+        "--num-bems", type=int, required=True, help="BEM bus addresses 1..N to subscribe to"
+    )
     p.add_argument("--broker", required=True, help="MQTT broker hostname")
     p.add_argument("--port", type=int, default=1883)
     p.add_argument("--username", default=None)
     p.add_argument("--password", default=None)
-    p.add_argument("--capacity", type=float, required=True,
-                   help="Battery capacity in Ah")
+    p.add_argument("--capacity", type=float, required=True, help="Battery capacity in Ah")
     p.add_argument("--num-cells", type=int, default=32)
     p.add_argument("--lut-path", required=True, help="Path to LUT parquet file")
-    p.add_argument("--log-dir", default="./logs",
-                   help="Directory for per-BEM .log files and the script log")
-    p.add_argument("--bem-model", default="P34",
-                   help="Model token in the filename (default: P34)")
-    p.add_argument("--serial-map", default=None,
-                   help="Optional JSON: {gateway: {bem_id: serial}}")
-    p.add_argument("--simulate-payload", default=None,
-                   help="Path to a JSON datagram; process once and exit (no MQTT).")
+    p.add_argument(
+        "--log-dir", default="./logs", help="Directory for per-BEM .log files and the script log"
+    )
+    p.add_argument("--bem-model", default="P34", help="Model token in the filename (default: P34)")
+    p.add_argument("--serial-map", default=None, help="Optional JSON: {gateway: {bem_id: serial}}")
+    p.add_argument(
+        "--simulate-payload",
+        default=None,
+        help="Path to a JSON datagram; process once and exit (no MQTT).",
+    )
     return p.parse_args(argv)
 
 
@@ -549,10 +551,8 @@ def main() -> None:
     args = parse_args()
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main_async(args))
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":
