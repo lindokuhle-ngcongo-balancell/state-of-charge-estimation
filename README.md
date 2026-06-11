@@ -109,8 +109,13 @@ Rows can be in any order; the loader sorts them by voltage automatically.
 
 ### MQTT payload
 
-Messages arrive on topic `{gateway_id}/local/bem/response/{bem_id:02d}/getLatestDatagram`.  
-Current is read from `bemCurrentInst` (mA, converted to A automatically).
+Messages arrive on topic `{gateway_id}/local/bem/response/{bem_id}/getLatestDatagram` and
+carry a per-BEM datagram with `sequenceNumber`, `date`, `battery_SoC`, `bemCurrentInst` (mA),
+`extTemp` (°C), and a `cells` array (each element with `cellVoltage` in mV and
+`temperature` in °C).
+
+The MQTT entry point uses a **separate parquet LUT** (temperature × current × DoD)
+rather than the CSV OCV LUT used by the CSV/Athena CLIs — see `--lut-path` below.
 
 ---
 
@@ -158,23 +163,43 @@ soc-estimate-athena --serial P34-000092 --lut_csv data/ocv_lut.csv \
 
 ### MQTT (real-time)
 
+**Best practice: run one process per gateway.** Each gateway gets its own broker
+connection, reconnect/backoff loop, and process lifecycle, so a single broker hiccup or
+a single gateway's misbehaviour can't take down the others. The CLI does accept
+`--gateway` multiple times for convenience, but a supervisor (systemd, pm2, Docker,
+etc.) restarting one `soc-estimate-mqtt` process per gateway is more robust at scale.
+
+Most BEM-equipped gateways are also their own broker, so `--broker` and `--gateway`
+are usually the same hostname:
+
 ```bash
 soc-estimate-mqtt \
-  --broker    mqtt.example.com \
-  --port      1883 \
-  --gateway   gw-000027 \
   --gateway   gw-000105 \
-  --bem_ids   1 2 3 4 \
-  --lut_csv   data/ocv_lut.csv \
+  --num-bems  5 \
+  --broker    gw-000105 \
+  --port      1883 \
   --capacity  277 \
-  --num_cells 32
-
-# With TLS and authentication:
-soc-estimate-mqtt --broker mqtt.example.com --port 8883 \
-  --use_tls --username myuser --password mypass \
-  --gateway gw-000027 --bem_ids 1 2 3 4 \
-  --lut_csv data/ocv_lut.csv --capacity 277 --num_cells 32
+  --num-cells 32 \
+  --lut-path  data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --log-dir   ./logs
 ```
+
+With authentication:
+
+```bash
+soc-estimate-mqtt --gateway gw-000105 --num-bems 5 \
+  --broker mqtt.example.com --port 1883 \
+  --username myuser --password mypass \
+  --capacity 277 --num-cells 32 \
+  --lut-path data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --log-dir ./logs
+```
+
+**Output:** one daily-rotating CSV per BEM at
+`{log-dir}/{gateway}-{serial}-{bem_model}-{bem_id:02d}.log`. Columns include
+`sequence_number`, `datestamp`, `soc` (BMS reported), `bemCurrentInst`, `extTemp`,
+`cellVoltage_1..N`, and `soc_min_i`, `soc_max_i`, `soc_rolling_i` per cell.
+`soc_rolling_i` fills in once a cell has ≥12 samples (≈12 ticks).
 
 ---
 
@@ -287,13 +312,13 @@ soc_estimation/          # Installable package
 ├── data_sources/
 │   ├── base.py          # BatteryDataRecord + DataSource ABC
 │   ├── csv_source.py    # Polars-backed CSV reader
-│   ├── athena_source.py # AWS Athena via awswrangler
-│   └── mqtt_source.py   # Async real-time MQTT
+│   └── athena_source.py # AWS Athena via awswrangler
 ├── utils/
 │   ├── config.py        # Env var / .env loading (AthenaConfig)
 │   ├── lut_loader.py    # load_ocv_lut()
 │   └── logging_utils.py # Rotating file + stderr logger
-├── engine.py            # SOCEstimationEngine — orchestrates everything
+├── engine.py            # SOCEstimationEngine — orchestrates CSV/Athena flow
+├── mqtt_bem_logger.py   # Standalone MQTT BEM logger (parquet LUT, per-BEM CSVs)
 └── cli.py               # argparse entry points
 
 archive/src/             # Legacy experimental scripts (not maintained)
