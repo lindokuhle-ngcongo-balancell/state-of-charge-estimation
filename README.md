@@ -1,23 +1,36 @@
 # soc-estimation
 
-Battery State-of-Charge (SoC) estimation using an OCV (Open-Circuit Voltage) lookup table with intelligent rest-window gating. Supports per-cell tracking across three data sources: CSV files, AWS Athena, and real-time MQTT streams.
+Battery State-of-Charge (SoC) estimation against a parquet OCV lookup table
+(temperature × current × DoD), with IR compensation and a per-cell rolling
+window. The **same algorithm and code path** drives all three data sources:
+CSV files, AWS Athena, and real-time MQTT streams.
 
-[![CI](https://github.com/YOUR_ORG/state-of-charge-estimation/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_ORG/state-of-charge-estimation/actions/workflows/ci.yml)
+[![CI](https://github.com/balancell/state-of-charge-estimation/actions/workflows/ci.yml/badge.svg)](https://github.com/balancell/state-of-charge-estimation/actions/workflows/ci.yml)
 
 ---
 
 ## How it works
 
-The estimator processes battery telemetry one tick at a time (typically 60 s cadence) and produces a SoC estimate for every cell in the pack.
+The estimator processes battery telemetry one tick at a time and produces a
+per-cell SoC bracket plus a rolling-mean SoC for every cell in the pack.
 
-**Per-cell decision logic (6 steps):**
+**Per-tick per-cell algorithm:**
 
-1. **Validate** — skip missing or zero cell voltages (`SKIP` mode).
-2. **Rest window gate** — the pack current must stay within `±rest_current_a` for `rest_min_ticks` consecutive ticks before an OCV reset is allowed. If not at rest, fall back to Coulomb Counting (`CC`) or return uninitialised (`UNINIT`).
-3. *(Optional)* **Voltage-delta gate** — require `|Δv| ≥ voltage_delta_min_mv` to prevent resets on a flat curve.
-4. **OCV interpolation** — look up SoC via binary-search + linear interpolation on the LUT.
-5. *(Optional)* **Voltage-tolerance gate** — reject if the measured voltage is more than `voltage_tolerance_mv` from the nearest LUT point.
-6. **LUT reset** — accept the new SoC and reset the rest counter so a fresh rest window is required before the next reset.
+1. **Scale & bucket current** — `I' = I_A / capacity_ah × 277`, then floor to
+   the nearest 5 A (matches the LUT's `current_average` grid).
+2. **Bucket temperature** — floor cell temperature to the nearest 5 °C.
+3. **Snap to LUT bin** — find the nearest available `(temperature, current)`
+   bin in the parquet LUT.
+4. **IR-compensate the cell voltage**
+   `V_adj_mV = V_meas_mV − R_mΩ · (I_actual − I_lut_bin)`  (R = 0.25 mΩ default).
+5. **Interpolate** — search the bin's V→DoD curve to recover a
+   `(soc_min, soc_max)` bracket.
+6. **Rolling mean** — push `(soc_min + soc_max)/2` into a 13-sample per-cell
+   deque; `soc_rolling` is reported once at least 12 samples are present.
+
+The CSV / Athena / MQTT entry points all funnel into the same shared functions
+in `soc_estimation/bem_estimator.py` and write the same output schema — only the
+input adapter differs.
 
 ---
 
@@ -77,24 +90,21 @@ The `.env` file is loaded automatically at startup. All values can be overridden
 
 ## OCV Lookup Table
 
-The LUT is a CSV with two columns:
+All three CLIs consume the same parquet LUT (a 4-D table of OCV vs DoD across
+temperature, current, and SoH). At load time the LUT is filtered to a healthy
+SoH band (98–102 %), averaged across SoH, and reshaped into one DoD→voltage
+curve per `(temperature, current)` bin.
 
-| Column    | Type    | Description             |
-|-----------|---------|-------------------------|
-| `soc`     | float   | State of charge (0–100 %) |
-| `voltage` | float   | Cell OCV in **mV**      |
+| Column            | Type   | Description |
+|-------------------|--------|-------------|
+| `soh`             | int    | State-of-health bucket; only 98–102 is kept |
+| `cell_temperatures` | float | Bucketed cell temperature (°C) |
+| `current_average` | float  | Bucketed pack current scaled to 277 Ah |
+| `q_removed_ah`    | float  | Coulombs removed; converted to DoD = `q/277·100` |
+| `cell_voltages_mean` | float | Cell voltage (mV) at this `(temp, current, DoD)` |
 
-Example (`data/ocv_lut.csv`):
-
-```csv
-soc,voltage
-0,3000
-10,3300
-...
-100,4100
-```
-
-Rows can be in any order; the loader sorts them by voltage automatically.
+The repository ships an example at
+`data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet`.
 
 ---
 
@@ -131,21 +141,11 @@ rather than the CSV OCV LUT used by the CSV/Athena CLIs — see `--lut-path` bel
 
 ```bash
 uv run soc-estimate-csv \
-  --csv          data/battery_measurements.csv \
-  --lut_csv      data/ocv_lut.csv \
-  --capacity     277 \
-  --num_cells    32 \
-  --output_csv   results/soc_output.csv
-```
-
-Optional tuning flags (same for all three CLIs):
-
-```
---rest_current_a     1.0   # ±A threshold for rest window (default 1.0)
---rest_min_ticks     5     # ticks required for rest (default 5 = 5 min)
---voltage_tolerance_mv 0   # reject if >N mV from nearest LUT point (0=off)
---voltage_delta_min_mv 0   # require voltage to change by ≥N mV (0=off)
---log_file soc.log
+  --csv         data/battery_measurements.csv \
+  --lut-path    data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --capacity    277 \
+  --num-cells   32 \
+  --output-csv  results/soc_output.csv
 ```
 
 ### AWS Athena
@@ -154,17 +154,18 @@ Connection parameters are read from `.env` automatically; override with flags as
 
 ```bash
 uv run soc-estimate-athena \
-  --serial    P34-000092 \
-  --lut_csv   data/ocv_lut.csv \
-  --capacity  277 \
-  --num_cells 32 \
-  --output_csv results/athena_soc.csv
+  --serial      P34-000092 \
+  --lut-path    data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --capacity    277 \
+  --num-cells   32 \
+  --output-csv  results/athena_soc.csv
 
 # Override env vars inline:
-uv run soc-estimate-athena --serial P34-000092 --lut_csv data/ocv_lut.csv \
-  --capacity 277 --num_cells 32 \
-  --database my_db --table telemetry --aws_profile staging \
-  --s3_output s3://my-bucket/athena-results/
+uv run soc-estimate-athena --serial P34-000092 \
+  --lut-path data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --capacity 277 --num-cells 32 \
+  --database my_db --table telemetry --aws-profile staging \
+  --s3-output s3://my-bucket/athena-results/
 ```
 
 ### MQTT (real-time)
@@ -211,25 +212,32 @@ uv run soc-estimate-mqtt --gateway gw-000105 --num-bems 5 \
 
 ## Python API
 
-### CSV
+### CSV / Athena (parquet LUT, BEM-schema output)
 
 ```python
-from soc_estimation import CSVDataSource, SOCEstimationEngine, setup_logger
+from soc_estimation import CSVDataSource, setup_logger
+from soc_estimation.bem_estimator import (
+    load_lut, make_lut_arrays, run_batch_estimation,
+)
 
 logger = setup_logger("my_app", "app.log")
 
+lut = make_lut_arrays(load_lut(
+    "data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet"
+))
+
 source = CSVDataSource("data/measurements.csv", num_cells=32, logger=logger)
-engine = SOCEstimationEngine(
-    data_source=source,
+
+written = run_batch_estimation(
+    records=source.get_records(),
     num_cells=32,
     capacity_ah=277,
-    ocv_lut_path="data/ocv_lut.csv",
-    rest_current_a=1.0,
-    rest_min_ticks=5,
+    lut=lut,
+    output_csv="results/out.csv",
     logger=logger,
 )
-results = engine.process_all_records(output_csv="results/out.csv")
-# results → list of dicts, one per (cell, tick)
+# Output is a single CSV — one row per tick — with the same columns as the
+# MQTT BEM logs: soc_min_i, soc_max_i, soc_rolling_i for each cell.
 ```
 
 ### Custom data source
@@ -250,29 +258,30 @@ class MySource(DataSource):
                 charge_in=row["charge_in_c"],
                 charge_out=row["charge_out_c"],
                 soc_nominal=row["soc_pct"],
-                # delta_charge is computed automatically if you leave it None
-                # and want the engine to handle it, or supply it directly:
-                delta_charge=row.get("delta_charge_c"),
             )
+
+# Then pass MySource().get_records() to run_batch_estimation(...)
 ```
 
 ---
 
 ## Output format
 
-One row per cell per tick:
+All three CLIs emit the same schema — **one row per tick** with per-cell SoC
+columns laid out beside each other. (The MQTT logger writes one such file per
+BEM into `--log-dir`; CSV/Athena write a single file to `--output-csv`.)
 
-| Column | Type | Description |
-|---|---|---|
-| `sequence_number` | int | Tick number |
-| `cell_idx` | int | Cell index (1-based) |
-| `mode` | str | `LUT` / `CC` / `UNINIT` / `SKIP` |
-| `soc_min` | float | Lower bracket SoC (LUT mode only) |
-| `soc_max` | float | Upper bracket SoC (LUT mode only) |
-| `soc_mid` | float | Mid bracket SoC (LUT mode only) |
-| `soc_hybrid` | float | Final SoC estimate (null if UNINIT) |
-| `time_stamp` | str | Measurement timestamp |
-| `soc_nominal` | float | BMS reference SoC |
+| Column                 | Type   | Description |
+|------------------------|--------|-------------|
+| `sequence_number`      | int    | Tick number from the source record |
+| `datestamp`            | str    | Source timestamp |
+| `soc`                  | float  | BMS-reported SoC % (reference only) |
+| `bemCurrentInst`       | int    | Pack current in **mA** (signed; positive = charging) |
+| `extTemp`              | float  | Pack/cell-bus temperature (°C) |
+| `cellVoltage_1..N`     | int    | Per-cell voltage in **mV** |
+| `soc_min_i`            | float  | Lower SoC bracket for cell *i* (this tick) |
+| `soc_max_i`            | float  | Upper SoC bracket for cell *i* (this tick) |
+| `soc_rolling_i`        | float  | 13-tick rolling mean of `(soc_min+soc_max)/2`; empty until ≥12 samples |
 
 ---
 
@@ -318,24 +327,22 @@ uv sync --extra dev
 
 ```
 soc_estimation/          # Installable package
-├── core/
-│   └── ocv_algorithm.py # Algorithm: voltage_to_soc, process_cell_tick,
-│                        #   CellState, RestWindowState
+├── bem_estimator.py     # Shared algorithm: load_lut, estimate_cell_soc,
+│                        #   RollingSoc, run_batch_estimation (CSV/Athena)
+├── mqtt_bem_logger.py   # MQTT entry point — subscribes per gateway, calls
+│                        #   estimate_cell_soc on each datagram
 ├── data_sources/
 │   ├── base.py          # BatteryDataRecord + DataSource ABC
 │   ├── csv_source.py    # Polars-backed CSV reader
 │   └── athena_source.py # AWS Athena via awswrangler
-├── utils/
-│   ├── config.py        # Env var / .env loading (AthenaConfig)
-│   ├── lut_loader.py    # load_ocv_lut()
-│   └── logging_utils.py # Rotating file + stderr logger
-├── engine.py            # SOCEstimationEngine — orchestrates CSV/Athena flow
-├── mqtt_bem_logger.py   # Standalone MQTT BEM logger (parquet LUT, per-BEM CSVs)
-└── cli.py               # argparse entry points
+├── core/ocv_algorithm.py # Legacy rest-window / OCV-CSV algorithm
+├── engine.py            # Legacy SOCEstimationEngine (kept for library tests)
+├── utils/               # config, lut_loader (CSV LUT), logging_utils
+└── cli.py               # argparse entry points → bem_estimator / mqtt_bem_logger
 
 archive/src/             # Legacy experimental scripts (not maintained)
 tests/
 ├── fixtures/            # Synthetic CSV fixtures (committed)
-├── test_algorithm.py    # Unit tests for core algorithm
-└── test_csv_integration.py  # End-to-end CSV → engine → results
+├── test_algorithm.py    # Unit tests for legacy core algorithm
+└── test_csv_integration.py  # End-to-end legacy engine tests
 ```
