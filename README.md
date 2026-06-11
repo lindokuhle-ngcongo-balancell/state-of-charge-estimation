@@ -32,15 +32,21 @@ The estimator processes battery telemetry one tick at a time (typically 60 s cad
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_ORG/state-of-charge-estimation.git
+git clone https://github.com/balancell/state-of-charge-estimation.git
 cd state-of-charge-estimation
 
-# Install with uv (recommended)
-uv pip install -e ".[dev]"
+# Install everything (project + dev tools) into a managed .venv
+uv sync --extra dev
 
-# Or with plain pip
+# Or with plain pip into your own venv
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
+
+> **Running commands.** The examples below use `uv run <cmd>`, which uses the
+> project's `.venv` automatically — no activation needed. If you prefer the
+> bare command (`pytest`, `soc-estimate-csv`, `ruff`, …), activate the venv
+> first: `source .venv/bin/activate` (or `.venv\Scripts\activate` on Windows).
 
 ---
 
@@ -124,7 +130,7 @@ rather than the CSV OCV LUT used by the CSV/Athena CLIs — see `--lut-path` bel
 ### CSV
 
 ```bash
-soc-estimate-csv \
+uv run soc-estimate-csv \
   --csv          data/battery_measurements.csv \
   --lut_csv      data/ocv_lut.csv \
   --capacity     277 \
@@ -147,7 +153,7 @@ Optional tuning flags (same for all three CLIs):
 Connection parameters are read from `.env` automatically; override with flags as needed:
 
 ```bash
-soc-estimate-athena \
+uv run soc-estimate-athena \
   --serial    P34-000092 \
   --lut_csv   data/ocv_lut.csv \
   --capacity  277 \
@@ -155,7 +161,7 @@ soc-estimate-athena \
   --output_csv results/athena_soc.csv
 
 # Override env vars inline:
-soc-estimate-athena --serial P34-000092 --lut_csv data/ocv_lut.csv \
+uv run soc-estimate-athena --serial P34-000092 --lut_csv data/ocv_lut.csv \
   --capacity 277 --num_cells 32 \
   --database my_db --table telemetry --aws_profile staging \
   --s3_output s3://my-bucket/athena-results/
@@ -173,7 +179,7 @@ Most BEM-equipped gateways are also their own broker, so `--broker` and `--gatew
 are usually the same hostname:
 
 ```bash
-soc-estimate-mqtt \
+uv run soc-estimate-mqtt \
   --gateway   gw-000105 \
   --num-bems  5 \
   --broker    gw-000105 \
@@ -187,7 +193,7 @@ soc-estimate-mqtt \
 With authentication:
 
 ```bash
-soc-estimate-mqtt --gateway gw-000105 --num-bems 5 \
+uv run soc-estimate-mqtt --gateway gw-000105 --num-bems 5 \
   --broker mqtt.example.com --port 1883 \
   --username myuser --password mypass \
   --capacity 277 --num-cells 32 \
@@ -274,13 +280,13 @@ One row per cell per tick:
 
 ```bash
 # Run all tests
-pytest
+uv run pytest
 
 # With coverage
-pytest --cov=soc_estimation --cov-report=term-missing
+uv run pytest --cov=soc_estimation --cov-report=term-missing
 
 # A single test file
-pytest tests/test_algorithm.py -v
+uv run pytest tests/test_algorithm.py -v
 ```
 
 The test suite uses synthetic fixture data in `tests/fixtures/` — no real battery data or AWS credentials are required.
@@ -291,13 +297,19 @@ The test suite uses synthetic fixture data in `tests/fixtures/` — no real batt
 
 ```bash
 # Lint
-ruff check soc_estimation/ tests/
+uv run ruff check soc_estimation/ tests/
 
 # Format (auto-fix)
-ruff format soc_estimation/ tests/
+uv run ruff format soc_estimation/ tests/
 
 # Format check only (as used in CI)
-ruff format --check soc_estimation/ tests/
+uv run ruff format --check soc_estimation/ tests/
+
+# Update lockfile after editing dependencies in pyproject.toml
+uv lock
+
+# Re-sync dependencies (e.g. after a `git pull`)
+uv sync --extra dev
 ```
 
 ---
