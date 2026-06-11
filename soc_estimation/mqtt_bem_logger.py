@@ -64,130 +64,18 @@ from pathlib import Path
 
 import aiomqtt
 import numpy as np
-import polars as pl
 
-WINDOW_SIZE_SOC = 13
-MIN_SAMPLES_ROLLING = WINDOW_SIZE_SOC - 1
-LUT_REFERENCE_CAPACITY = 277.0
-RESISTANCE_OHM = 0.00025
-LUT_SOH_MIN = 98
-LUT_SOH_MAX = 102
+from soc_estimation.bem_estimator import (
+    LUT_REFERENCE_CAPACITY,
+    MIN_SAMPLES_ROLLING,
+    WINDOW_SIZE_SOC,
+    LutArrays,
+    estimate_cell_soc,
+    load_lut,
+    make_lut_arrays,
+)
 
 LOG = logging.getLogger("mqtt_bem")
-
-
-def load_lut(lut_path: str) -> pl.DataFrame:
-    return (
-        pl.scan_parquet(lut_path)
-        .with_columns((pl.col("q_removed_ah") / 277 * 100).round(0).alias("dod"))
-        .filter(pl.col("dod").is_between(0, 100, closed="both"))
-        .group_by(["soh", "cell_temperatures", "current_average", "dod"])
-        .agg(pl.col("cell_voltages_mean").mean().round(0).alias("cell_voltages_mean"))
-        .sort(["soh", "cell_temperatures", "current_average", "dod"])
-        .filter(pl.col("soh").is_between(LUT_SOH_MIN, LUT_SOH_MAX, closed="both"))
-        .group_by(["cell_temperatures", "current_average", "dod"])
-        .agg(pl.col("cell_voltages_mean").mean().round(0).alias("cell_voltages_mean"))
-        .with_columns(
-            pl.col("dod").count().over(["cell_temperatures", "current_average"]).alias("dod_count")
-        )
-        .filter(pl.col("dod_count") >= 90)
-        .drop("dod_count")
-        .sort(["cell_temperatures", "current_average", "dod"])
-        .collect()
-    )
-
-
-@dataclass
-class LutArrays:
-    unique_temps: np.ndarray
-    available_currents: dict
-    bin_curves: dict
-
-
-def make_lut_arrays(lut: pl.DataFrame) -> LutArrays:
-    temp = lut["cell_temperatures"].to_numpy().astype(float)
-    curr = lut["current_average"].to_numpy().astype(float)
-    volt = lut["cell_voltages_mean"].to_numpy().astype(float)
-    dod = lut["dod"].to_numpy().astype(float)
-
-    unique_temps = np.unique(temp)
-    available_currents = {float(t): np.unique(curr[temp == t]) for t in unique_temps}
-
-    bin_curves: dict[tuple[float, float], tuple[np.ndarray, np.ndarray]] = {}
-    for t in unique_temps:
-        for c in available_currents[float(t)]:
-            mask = (temp == t) & (curr == c)
-            bd, bv = dod[mask], volt[mask]
-            valid = np.isfinite(bv) & np.isfinite(bd) & (bv >= 0)
-            bd, bv = bd[valid], bv[valid]
-            if bd.size == 0:
-                continue
-            idx = np.argsort(bd)
-            bin_curves[(float(t), float(c))] = (bd[idx], bv[idx])
-
-    return LutArrays(
-        unique_temps=unique_temps,
-        available_currents=available_currents,
-        bin_curves=bin_curves,
-    )
-
-
-def estimate_cell_soc(
-    cell_voltage_mv: float,
-    cell_temp_bucket: float,
-    current_bucket_scaled: float,
-    lut: LutArrays,
-    resistance_ohm: float = RESISTANCE_OHM,
-) -> tuple[float, float]:
-    """Return (soc_min, soc_max) for a single (V_cell_mV, T_°C, I_A_scaled) sample."""
-    if cell_temp_bucket is None or np.isnan(cell_temp_bucket):
-        matched_temp = float(np.median(lut.unique_temps))
-    else:
-        matched_temp = float(
-            lut.unique_temps[np.argmin(np.abs(lut.unique_temps - cell_temp_bucket))]
-        )
-
-    avail = lut.available_currents.get(matched_temp)
-    if avail is None or avail.size == 0:
-        return (float("nan"), float("nan"))
-
-    if current_bucket_scaled is None or np.isnan(current_bucket_scaled):
-        matched_curr = float(avail[np.argmin(np.abs(avail))])
-    else:
-        matched_curr = float(avail[np.argmin(np.abs(avail - current_bucket_scaled))])
-
-    r_mohm = resistance_ohm * 1000.0
-    v_adj = cell_voltage_mv - r_mohm * (current_bucket_scaled - matched_curr)
-
-    curve = lut.bin_curves.get((matched_temp, matched_curr))
-    if curve is None:
-        return (float("nan"), float("nan"))
-    bin_dod, bin_volt = curve
-
-    v_high, v_low = bin_volt[0], bin_volt[-1]
-
-    if v_adj > v_high:
-        dod_lo = dod_hi = 0.0
-    elif v_adj < v_low:
-        dod_lo = dod_hi = 100.0
-    else:
-        flipped_v = bin_volt[::-1]
-        flipped_d = bin_dod[::-1]
-        idx_right = int(
-            np.clip(
-                np.searchsorted(flipped_v, v_adj, side="left"),
-                0,
-                len(flipped_v) - 1,
-            )
-        )
-        idx_left = int(np.clip(idx_right - 1, 0, len(flipped_v) - 1))
-        d1, d2 = float(flipped_d[idx_left]), float(flipped_d[idx_right])
-        dod_lo = max(min(d1, d2), 0.0)
-        dod_hi = min(max(d1, d2), 100.0)
-
-    soc_min = max(0.0, min(100.0, 100.0 - dod_hi))
-    soc_max = max(0.0, min(100.0, 100.0 - dod_lo))
-    return soc_min, soc_max
 
 
 class CsvDailyRotatingHandler(logging.handlers.TimedRotatingFileHandler):
