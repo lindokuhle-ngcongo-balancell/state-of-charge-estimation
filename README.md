@@ -210,6 +210,113 @@ uv run soc-estimate-mqtt --gateway gw-000105 --num-bems 5 \
 
 ---
 
+## State of Health (SoH)
+
+Two extra CLIs estimate per-cell **State of Health** on top of the *same*
+parquet-LUT SoC estimator used everywhere else (`bem_estimator.estimate_cell_soc`)
+— the SoH layer just adds a charge-counter reference and a discharge gate. They
+read from AWS Athena and use the same `.env` connection settings as
+`soc-estimate-athena`.
+
+**How SoH is derived (per cell):**
+
+1. **Reference SoC from the charge counters** (`soc_nominal`) — the *q_top*
+   algorithm latches the charge counter while a cell rests at the top of charge
+   (≥3500 mV, idle, ≥10 ticks into the rest), forward-fills it, and converts the
+   charge removed since that top into a SoC %.
+2. **LUT SoC estimate** — every (cell voltage, bucketed temperature, bucketed
+   current) sample is run through the shared estimator to get a `(soc_min,
+   soc_max)` bracket; a short rolling mean of the midpoint gives
+   `rolling_soc_mean`.
+3. **SoH** — on discharge samples only (see `--current-threshold` below):
+
+   ```
+   soh = 100 − (soc_nominal − rolling_soc_mean)
+   ```
+
+   This is smoothed (long rolling mean) and forward-filled. Each cell's last
+   forward-filled value is its reported SoH; the **pack SoH is the worst
+   (lowest) cell**.
+
+### The `--current-threshold` flag
+
+SoH is only meaningful where the cell is under a known, steady load — the OCV→DoD
+LUT curve is most reliable under solid discharge. `--current-threshold` is that
+gate: a sample contributes to the SoH estimate only when
+
+```
+current_average ≤ current_threshold
+```
+
+`current_average` is the **charge-counter-derived current** (Δcharge per minute)
+**scaled to the 277 Ah LUT reference** and floored to the nearest 5 A. It is
+negative while discharging, so the threshold is a negative number. **The default
+is `-100` A** (i.e. only count samples discharging at ≥100 A, reference-scaled).
+
+| `--current-threshold` | Keeps samples that are… | Effect |
+|---|---|---|
+| `-150` | discharging ≥150 A | strictest — fewest, cleanest samples; may yield no SoH for lightly-used packs |
+| `-100` *(default)* | discharging ≥100 A | balanced — solid discharge only |
+| `-50`  | discharging ≥50 A  | more samples, noisier estimate |
+| `0`    | any discharge      | most permissive; includes weak/near-idle discharge |
+
+Because the value is scaled to 277 Ah, the same threshold means the same C-rate
+across packs of different capacity — pass `--capacity` correctly and `-100`
+behaves consistently whether the pack is 138 Ah or 277 Ah.
+
+> See [`docs/soh-current-threshold.md`](docs/soh-current-threshold.md) for a
+> real sensitivity sweep (−50 / −100 / −150) and why −100 is the default.
+
+### Single battery
+
+```bash
+uv run soc-estimate-soh \
+  --serial            BE20000157 \
+  --capacity          277 \
+  --num-cells         16 \
+  --lut-path          data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --current-threshold -100 \
+  --output-csv        results/soh_BE20000157.csv
+```
+
+Writes a per-cell-over-time CSV (`cell_number`, `time_stamp`, `soh_estimate_ffill`,
+…) and logs the final SoH for each cell plus the pack worst-cell SoH. Tighten the
+gate to `-150` for only the heaviest discharges, or loosen to `-50` to include
+more (noisier) samples:
+
+```bash
+uv run soc-estimate-soh --serial BE20000157 --capacity 277 --num-cells 16 \
+  --lut-path data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --current-threshold -50 \
+  --start-date 2025-01-01 --end-date 2025-12-31
+```
+
+### Batch summary
+
+Score many batteries from a spreadsheet (CSV or XLSX) with columns
+`device_serial`, `capacity`, `cell_quantity`. Batteries sharing
+`(capacity, cell_quantity)` are grouped and fetched `--chunk-size` serials at a
+time, so only one chunk of raw data is in memory at once:
+
+```bash
+uv run soc-estimate-soh-batch \
+  --input             batteries.csv \
+  --lut-path          data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet \
+  --num-cells         16 \
+  --current-threshold -100 \
+  --chunk-size        50 \
+  --output-csv        results/soh_summary.csv
+```
+
+> `--num-cells` here is the cell count used when filtering Athena rows; per-row
+> `cell_quantity` from the spreadsheet drives the grouping and the output width.
+
+The summary CSV has one row per battery: `device_serial`, `capacity`,
+`cell_quantity`, `soh_cell_1 … soh_cell_N`, `lowest_soh_per_pack` (the worst
+cell), and `time_stamp_of_last_recording`.
+
+---
+
 ## Python API
 
 ### CSV / Athena (parquet LUT, BEM-schema output)
@@ -239,6 +346,29 @@ written = run_batch_estimation(
 # Output is a single CSV — one row per tick — with the same columns as the
 # MQTT BEM logs: soc_min_i, soc_max_i, soc_rolling_i for each cell.
 ```
+
+### State of Health (SoH)
+
+```python
+import polars as pl
+from soc_estimation import estimate_soh, summarise_soh
+from soc_estimation.bem_estimator import load_lut, make_lut_arrays
+
+lut = make_lut_arrays(load_lut(
+    "data/lut/voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet"
+))
+
+# df_raw: one row per tick with device_serial, sequence_number, time_stamp,
+# current, charge_in, charge_out, temperature_battery, and cell_voltages as a
+# per-row list of V (the Athena cell_data.cell_voltage array shape).
+df_soh = estimate_soh(
+    df_raw, lut, capacity_ah=277, num_cells=16, current_threshold=-100,
+)
+print(summarise_soh(df_soh, num_cells=16))   # final per-cell SoH + worst cell
+```
+
+`run_soh_batch(...)` wraps the chunked Athena fetch + summary used by
+`soc-estimate-soh-batch`.
 
 ### Custom data source
 
@@ -331,6 +461,8 @@ soc_estimation/          # Installable package
 │                        #   RollingSoc, run_batch_estimation (CSV/Athena)
 ├── mqtt_bem_logger.py   # MQTT entry point — subscribes per gateway, calls
 │                        #   estimate_cell_soc on each datagram
+├── soh_estimator.py     # Per-cell SoH (q_top reference + shared estimator):
+│                        #   estimate_soh, summarise_soh, run_soh_batch
 ├── data_sources/
 │   ├── base.py          # BatteryDataRecord + DataSource ABC
 │   ├── csv_source.py    # Polars-backed CSV reader
@@ -339,6 +471,7 @@ soc_estimation/          # Installable package
 ├── engine.py            # Legacy SOCEstimationEngine (kept for library tests)
 ├── utils/               # config, lut_loader (CSV LUT), logging_utils
 └── cli.py               # argparse entry points → bem_estimator / mqtt_bem_logger
+                         #   / soh_estimator
 
 archive/src/             # Legacy experimental scripts (not maintained)
 tests/
