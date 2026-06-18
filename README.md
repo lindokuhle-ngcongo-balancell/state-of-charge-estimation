@@ -264,6 +264,9 @@ Because the value is scaled to 277 Ah, the same threshold means the same C-rate
 across packs of different capacity — pass `--capacity` correctly and `-100`
 behaves consistently whether the pack is 138 Ah or 277 Ah.
 
+> See [`docs/soh-current-threshold.md`](docs/soh-current-threshold.md) for a
+> real sensitivity sweep (−50 / −100 / −150) and why −100 is the default.
+
 ### Single battery
 
 ```bash
