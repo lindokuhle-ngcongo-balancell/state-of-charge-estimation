@@ -22,6 +22,12 @@ from soc_estimation.data_sources import (
     DataSource,
 )
 from soc_estimation.engine import SOCEstimationEngine
+from soc_estimation.soh_estimator import (
+    DEFAULT_CURRENT_THRESHOLD,
+    estimate_soh,
+    run_soh_batch,
+    summarise_soh,
+)
 from soc_estimation.utils import load_ocv_lut, setup_logger
 
 __version__ = "0.1.0"
@@ -40,6 +46,11 @@ __all__ = [
     "AthenaDataSource",
     # Engine
     "SOCEstimationEngine",
+    # SoH estimation
+    "estimate_soh",
+    "summarise_soh",
+    "run_soh_batch",
+    "DEFAULT_CURRENT_THRESHOLD",
     # Utilities
     "setup_logger",
     "load_ocv_lut",

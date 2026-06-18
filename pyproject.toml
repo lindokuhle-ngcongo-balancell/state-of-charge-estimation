@@ -26,9 +26,11 @@ dev = [
 ]
 
 [project.scripts]
-soc-estimate-csv    = "soc_estimation.cli:main_csv"
-soc-estimate-athena = "soc_estimation.cli:main_athena"
-soc-estimate-mqtt   = "soc_estimation.cli:main_mqtt"
+soc-estimate-csv       = "soc_estimation.cli:main_csv"
+soc-estimate-athena    = "soc_estimation.cli:main_athena"
+soc-estimate-mqtt      = "soc_estimation.cli:main_mqtt"
+soc-estimate-soh       = "soc_estimation.cli:main_soh"
+soc-estimate-soh-batch = "soc_estimation.cli:main_soh_batch"
 
 [build-system]
 requires = ["hatchling"]
