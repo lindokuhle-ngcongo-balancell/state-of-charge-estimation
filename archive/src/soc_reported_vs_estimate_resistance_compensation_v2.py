@@ -252,7 +252,7 @@ def fetch_data(serial: str, num_cells: int, capacity_ah: float, aws_profile: str
     boto3.setup_default_session(profile_name=aws_profile)
     sql = build_query(serial, num_cells, capacity_ah, start_time)
     print(f"Fetching data for {serial} from Athena …")
-    pd_df = wr.athena.read_sql_query(sql=sql, database="scratch", workgroup="data_engineering")
+    pd_df = wr.athena.read_sql_query(sql=sql, database="scratch", workgroup="data_consumers")
     return pl.from_pandas(pd_df)
 
 

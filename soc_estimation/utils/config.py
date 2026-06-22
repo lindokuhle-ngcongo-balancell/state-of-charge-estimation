@@ -42,6 +42,6 @@ def get_athena_config() -> AthenaConfig:
         region=os.getenv("AWS_REGION", "eu-west-1"),
         database=os.getenv("ATHENA_DATABASE", ""),
         table=os.getenv("ATHENA_TABLE", ""),
-        workgroup=os.getenv("ATHENA_WORKGROUP", "data_engineering"),
+        workgroup=os.getenv("ATHENA_WORKGROUP", "data_consumers"),
         s3_output=os.getenv("ATHENA_S3_OUTPUT") or None,
     )

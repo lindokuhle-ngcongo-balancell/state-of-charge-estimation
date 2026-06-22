@@ -256,7 +256,7 @@ def fetch_data(serial: str, num_cells: int, aws_profile: str) -> pl.DataFrame:
     sql = build_query(serial, num_cells)
     print(f"Fetching data for {serial} from Athena …")
     pd_df = wr.athena.read_sql_query(
-        sql=sql, database="scratch", workgroup="data_engineering"
+        sql=sql, database="scratch", workgroup="data_consumers"
     )
     return pl.from_pandas(pd_df)
 

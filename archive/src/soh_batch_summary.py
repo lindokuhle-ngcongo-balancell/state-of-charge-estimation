@@ -181,7 +181,7 @@ def fetch_chunk(
     
     boto3.setup_default_session(profile_name="infra_dev")
     pd_df = wr.athena.read_sql_query(
-        sql=sql, database="scratch", workgroup="data_engineering"
+        sql=sql, database="scratch", workgroup="data_consumers"
     )
     # boto3.client("athena").close()  # free connection pool immediately
     return pl.from_pandas(pd_df) if not pd_df.empty else pl.DataFrame()

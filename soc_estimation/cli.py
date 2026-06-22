@@ -125,7 +125,7 @@ def create_athena_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--workgroup",
         default=env_cfg.workgroup,
-        help="Athena workgroup [env: ATHENA_WORKGROUP, default: data_engineering]",
+        help="Athena workgroup [env: ATHENA_WORKGROUP, default: data_consumers]",
     )
     p.add_argument(
         "--s3-output",
@@ -235,7 +235,7 @@ def _add_soh_common_args(p: argparse.ArgumentParser, env_cfg) -> None:
     p.add_argument(
         "--workgroup",
         default=env_cfg.workgroup,
-        help="Athena workgroup [env: ATHENA_WORKGROUP, default: data_engineering]",
+        help="Athena workgroup [env: ATHENA_WORKGROUP, default: data_consumers]",
     )
     p.add_argument(
         "--s3-output",
