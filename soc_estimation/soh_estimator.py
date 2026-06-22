@@ -387,7 +387,7 @@ def fetch_soh_rows(
     session = boto3.Session(profile_name=aws_profile) if aws_profile else boto3.Session()
     kwargs: dict = {
         "sql": sql,
-        "database": database,
+        "database": "scratch",
         "workgroup": workgroup,
         "boto3_session": session,
     }

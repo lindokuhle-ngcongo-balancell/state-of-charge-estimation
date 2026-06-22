@@ -148,7 +148,7 @@ class AthenaDataSource(DataSource):
 
         kwargs: dict = {
             "sql": sql,
-            "database": self.database,
+            "database": "scratch",
             "workgroup": self.workgroup,
             "boto3_session": self._boto3_session(),
         }
