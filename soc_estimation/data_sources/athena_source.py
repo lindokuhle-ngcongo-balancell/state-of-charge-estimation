@@ -50,7 +50,7 @@ class AthenaDataSource(DataSource):
             table: Athena table. Falls back to ATHENA_TABLE env var.
             aws_profile: AWS named profile. Falls back to AWS_PROFILE env var.
             workgroup: Athena workgroup. Falls back to ATHENA_WORKGROUP env var
-                (default "data_engineering").  The workgroup must have a
+                (default "data_consumers").  The workgroup must have a
                 default S3 output configured if s3_output is omitted.
             s3_output: Optional S3 URI for query results.  If omitted the
                 workgroup's default output location is used.

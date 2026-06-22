@@ -238,7 +238,7 @@ def fetch_data(serial, num_cells, capacity_ah, start_date, end_date, aws_profile
     return pl.from_pandas(
         wr.athena.read_sql_query(
             sql=build_query(serial, num_cells, capacity_ah, start_date, end_date),
-            database="scratch", workgroup="data_engineering",
+            database="scratch", workgroup="data_consumers",
         )
     )
 
