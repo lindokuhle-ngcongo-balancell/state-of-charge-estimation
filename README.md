@@ -77,9 +77,9 @@ cp .env.example .env
 # .env
 AWS_PROFILE=infra_dev
 AWS_REGION=eu-west-1
-ATHENA_DATABASE=battery_data
-ATHENA_TABLE=measurements
-ATHENA_S3_OUTPUT=s3://your-bucket/athena-results/
+ATHENA_DATABASE=analytics
+ATHENA_TABLE=batteries_v3
+ATHENA_WORKGROUP=data_consumers
 ```
 
 The `.env` file is loaded automatically at startup. All values can be overridden by the equivalent CLI flag (e.g. `--database`).
