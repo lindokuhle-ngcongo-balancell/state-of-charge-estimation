@@ -51,6 +51,8 @@ WINDOW_SIZE_SOH = 1441
 WINDOW_SIZE_SOC = 7
 # Default discharge gate: only samples discharging at ≥100 A (277 Ah-scaled) count.
 DEFAULT_CURRENT_THRESHOLD = -100.0
+# Default top-of-charge voltage (mV): a resting cell at/above this latches q_top.
+DEFAULT_TOP_OF_CHARGE_MV = 3500.0
 
 
 # ─── Per-cell soc_nominal — q_top / charge-counter algorithm ─────────────────
@@ -58,6 +60,7 @@ def compute_per_cell_soc(
     df_raw: pl.DataFrame,
     capacity_ah: float,
     num_cells: int,
+    top_of_charge_mv: float = DEFAULT_TOP_OF_CHARGE_MV,
 ) -> pl.DataFrame:
     """Compute per-cell ``soc_nominal`` via the q_top / charge-counter algorithm.
 
@@ -65,6 +68,10 @@ def compute_per_cell_soc(
     ``device_serial`` so each battery's counters are computed independently.
     Expects ``cell_voltages`` as a per-row list (one entry per cell, in V) — the
     raw shape returned by the Athena ``cell_data.cell_voltage`` array column.
+
+    ``top_of_charge_mv`` is the resting cell voltage (mV) at/above which q_top is
+    latched — i.e. the cell is treated as full. Raise it for chemistries that
+    rest higher, lower it to catch tops that never reach 3500 mV.
 
     Returns a long DataFrame with one row per (device_serial, sequence_number,
     cell_position) carrying ``soc_nominal`` (and the binned/derived helpers).
@@ -114,7 +121,7 @@ def compute_per_cell_soc(
         # ── q_top: latch delta_charge when cell is resting at high voltage ────
         .with_columns(
             pl.when(
-                (pl.col("cell_voltages") >= 3500)  # mV
+                (pl.col("cell_voltages") >= top_of_charge_mv)  # mV
                 & (pl.col("state") == 2)  # idle
                 & (pl.col("position_in_group") >= 10)
             )
@@ -155,6 +162,7 @@ def prepare_long(
     df_raw: pl.DataFrame,
     capacity_ah: float,
     num_cells: int,
+    top_of_charge_mv: float = DEFAULT_TOP_OF_CHARGE_MV,
 ) -> pl.DataFrame:
     """Compute per-cell soc_nominal then bucket temperature and current.
 
@@ -162,7 +170,7 @@ def prepare_long(
     nearest 5 A; ``cell_temperatures`` is the pack temperature floored to 5 °C —
     exactly the grid ``bem_estimator.estimate_cell_soc`` expects.
     """
-    df_long = compute_per_cell_soc(df_raw, capacity_ah, num_cells)
+    df_long = compute_per_cell_soc(df_raw, capacity_ah, num_cells, top_of_charge_mv)
 
     return (
         df_long.with_columns(
@@ -256,16 +264,20 @@ def estimate_soh(
     num_cells: int,
     current_threshold: float = DEFAULT_CURRENT_THRESHOLD,
     resistance_ohm: float = RESISTANCE_OHM,
+    top_of_charge_mv: float = DEFAULT_TOP_OF_CHARGE_MV,
     logger: logging.Logger | None = None,
 ) -> pl.DataFrame:
     """Estimate per-cell SoH over time for one or more batteries.
+
+    ``top_of_charge_mv`` sets the resting voltage at/above which the q_top
+    reference latches (see ``compute_per_cell_soc``).
 
     Returns a long DataFrame — one row per qualifying (cell, tick) — with
     ``soh_estimate_ffill`` plus ``cell_number`` (1-based) and ``device_serial``.
     Empty if no cell produced a qualifying discharge sample.
     """
     log = logger or logging.getLogger(__name__)
-    df_long = prepare_long(df_raw, capacity_ah, num_cells)
+    df_long = prepare_long(df_raw, capacity_ah, num_cells, top_of_charge_mv)
 
     results: list[pl.DataFrame] = []
     for i in range(num_cells):
@@ -424,6 +436,7 @@ def run_soh_batch(
     s3_output: str | None = None,
     current_threshold: float = DEFAULT_CURRENT_THRESHOLD,
     resistance_ohm: float = RESISTANCE_OHM,
+    top_of_charge_mv: float = DEFAULT_TOP_OF_CHARGE_MV,
     chunk_size: int = 50,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -519,6 +532,7 @@ def run_soh_batch(
                         num_cells,
                         current_threshold=current_threshold,
                         resistance_ohm=resistance_ohm,
+                        top_of_charge_mv=top_of_charge_mv,
                         logger=log,
                     )
                     soh_row = summarise_soh(df_soh, num_cells)

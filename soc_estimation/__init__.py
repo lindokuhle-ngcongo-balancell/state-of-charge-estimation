@@ -24,6 +24,7 @@ from soc_estimation.data_sources import (
 from soc_estimation.engine import SOCEstimationEngine
 from soc_estimation.soh_estimator import (
     DEFAULT_CURRENT_THRESHOLD,
+    DEFAULT_TOP_OF_CHARGE_MV,
     estimate_soh,
     run_soh_batch,
     summarise_soh,
@@ -51,6 +52,7 @@ __all__ = [
     "summarise_soh",
     "run_soh_batch",
     "DEFAULT_CURRENT_THRESHOLD",
+    "DEFAULT_TOP_OF_CHARGE_MV",
     # Utilities
     "setup_logger",
     "load_ocv_lut",
