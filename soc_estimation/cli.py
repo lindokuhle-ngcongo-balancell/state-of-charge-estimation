@@ -11,6 +11,7 @@ from soc_estimation.data_sources import AthenaDataSource, CSVDataSource
 from soc_estimation.mqtt_bem_logger import main as mqtt_bem_main
 from soc_estimation.soh_estimator import (
     DEFAULT_CURRENT_THRESHOLD,
+    DEFAULT_TOP_OF_CHARGE_MV,
     estimate_soh,
     fetch_soh_rows,
     run_soh_batch,
@@ -218,6 +219,15 @@ def _add_soh_common_args(p: argparse.ArgumentParser, env_cfg) -> None:
         ),
     )
     p.add_argument(
+        "--top-of-charge-mv",
+        type=float,
+        default=DEFAULT_TOP_OF_CHARGE_MV,
+        help=(
+            "Resting cell voltage (mV) at/above which the q_top reference latches "
+            "(cell treated as full). Default %(default)s."
+        ),
+    )
+    p.add_argument(
         "--database",
         default=env_cfg.database or "analytics",
         help="Athena database [env: ATHENA_DATABASE]",
@@ -316,6 +326,7 @@ def run_soh_single(args: argparse.Namespace) -> None:
             capacity_ah=args.capacity,
             num_cells=args.num_cells,
             current_threshold=args.current_threshold,
+            top_of_charge_mv=args.top_of_charge_mv,
             logger=logger,
         )
         if not df_soh.is_empty():
@@ -411,6 +422,7 @@ def run_soh_batch_cli(args: argparse.Namespace) -> None:
             aws_profile=args.aws_profile,
             s3_output=args.s3_output,
             current_threshold=args.current_threshold,
+            top_of_charge_mv=args.top_of_charge_mv,
             chunk_size=args.chunk_size,
             start_date=args.start_date,
             end_date=args.end_date,

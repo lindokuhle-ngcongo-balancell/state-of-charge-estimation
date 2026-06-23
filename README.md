@@ -222,8 +222,9 @@ read from AWS Athena and use the same `.env` connection settings as
 
 1. **Reference SoC from the charge counters** (`soc_nominal`) — the *q_top*
    algorithm latches the charge counter while a cell rests at the top of charge
-   (≥3500 mV, idle, ≥10 ticks into the rest), forward-fills it, and converts the
-   charge removed since that top into a SoC %.
+   (≥3500 mV by default, idle, ≥10 ticks into the rest), forward-fills it, and
+   converts the charge removed since that top into a SoC %. The top-of-charge
+   voltage is configurable with `--top-of-charge-mv` (see below).
 2. **LUT SoC estimate** — every (cell voltage, bucketed temperature, bucketed
    current) sample is run through the shared estimator to get a `(soc_min,
    soc_max)` bracket; a short rolling mean of the midpoint gives
@@ -266,6 +267,26 @@ behaves consistently whether the pack is 138 Ah or 277 Ah.
 
 > See [`docs/soh-current-threshold.md`](docs/soh-current-threshold.md) for a
 > real sensitivity sweep (−50 / −100 / −150) and why −100 is the default.
+
+### The `--top-of-charge-mv` flag
+
+The `soc_nominal` reference is anchored at the *top of charge*: while a cell
+rests (idle, ≥10 ticks into the rest) **at or above this voltage**, the q_top
+algorithm latches the charge counter and treats the cell as full. Everything
+downstream is "charge removed since that top," so this voltage defines where SoC
+= 100 %.
+
+`--top-of-charge-mv` defaults to **3500 mV**. Adjust it for cells that rest at a
+different fully-charged voltage:
+
+- **Raise it** (e.g. `3550`) to require a fuller rest before anchoring — fewer,
+  more confident tops.
+- **Lower it** (e.g. `3450`) if a pack never rests as high as 3500 mV and would
+  otherwise never latch a top (yielding no SoH at all).
+
+If the value sits above the voltage a pack ever rests at, q_top never latches and
+the battery produces **no** SoH output — a useful signal that the threshold is
+set too high for that chemistry/pack.
 
 ### Single battery
 

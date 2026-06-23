@@ -101,6 +101,16 @@ def test_summarise_soh_keys(lut):
     assert "time_stamp_of_last_recording" in summary
 
 
+def test_top_of_charge_mv_gates_q_top(lut):
+    raw = _synthetic_raw()  # rests at 3600 mV before discharge
+    # Default 3500 mV latches the top → SoH rows exist.
+    default = soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS)
+    assert not default.is_empty()
+    # A top set above the rest voltage never latches q_top → no soc_nominal → empty.
+    too_high = soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS, top_of_charge_mv=3700.0)
+    assert too_high.is_empty()
+
+
 def test_summarise_soh_empty():
     summary = soh.summarise_soh(pl.DataFrame(), NUM_CELLS)
     assert summary["lowest_soh_per_pack"] is None
