@@ -15,11 +15,14 @@ from soc_estimation import soh_estimator as soh
 from soc_estimation.bem_estimator import load_lut, make_lut_arrays
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LUT_PATH = (
-    REPO_ROOT
-    / "data"
-    / "lut"
-    / "voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet"
+LUT_NAME = "voltage_vs_soh_vs_temperature_vs_q_removed_vs_current_average_277ah.parquet"
+LUT_PATH = next(
+    (
+        p
+        for p in (REPO_ROOT / "data" / "lut" / LUT_NAME, REPO_ROOT / "data" / LUT_NAME)
+        if p.exists()
+    ),
+    REPO_ROOT / "data" / "lut" / LUT_NAME,
 )
 
 NUM_CELLS = 4
@@ -62,9 +65,12 @@ def _synthetic_raw(n: int = 400, ncells: int = NUM_CELLS) -> pl.DataFrame:
 
 def test_prepare_long_buckets_and_soc_nominal():
     df_long = soh.prepare_long(_synthetic_raw(), CAPACITY_AH, NUM_CELLS)
-    assert {"soc_nominal", "current_average", "cell_temperatures", "cell_position"} <= set(
-        df_long.columns
-    )
+    assert {
+        "soc_nominal",
+        "current_average",
+        "cell_temperatures",
+        "cell_position",
+    } <= set(df_long.columns)
     # current_average is floored to a multiple of 5
     avgs = df_long["current_average"].drop_nulls().to_list()
     assert all(abs(a % 5) < 1e-9 for a in avgs)
@@ -109,6 +115,29 @@ def test_top_of_charge_mv_gates_q_top(lut):
     # A top set above the rest voltage never latches q_top → no soc_nominal → empty.
     too_high = soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS, top_of_charge_mv=3700.0)
     assert too_high.is_empty()
+
+
+def test_soh_is_capacity_ratio_in_knee(lut):
+    df_soh = soh.estimate_soh(_synthetic_raw(), lut, CAPACITY_AH, NUM_CELLS)
+    assert not df_soh.is_empty()
+    # every kept sample sits in the knee (0 < soc_lut <= knee_soc)
+    assert df_soh["soc_lut"].min() > 0
+    assert df_soh["soc_lut"].max() <= soh.DEFAULT_KNEE_SOC
+    expected = df_soh["q_removed_ah"] / (1 - df_soh["soc_lut"] / 100) / CAPACITY_AH * 100
+    assert (df_soh["soh_estimate_raw"] - expected).abs().max() < 1e-9
+
+
+def test_knee_soc_gates_samples(lut):
+    raw = _synthetic_raw()
+    narrow = soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS, knee_soc=5.0)
+    wide = soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS, knee_soc=50.0)
+    assert wide.height >= narrow.height
+    assert soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS, knee_soc=0.0).is_empty()
+
+
+def test_max_top_age_drops_stale_anchor(lut):
+    raw = _synthetic_raw()  # discharge runs ~370 ticks (~6 h) past the top
+    assert soh.estimate_soh(raw, lut, CAPACITY_AH, NUM_CELLS, max_top_age_hours=0.1).is_empty()
 
 
 def test_summarise_soh_empty():

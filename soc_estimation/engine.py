@@ -161,6 +161,7 @@ class SOCEstimationEngine:
         }
 
         df = pl.DataFrame(results, schema=schema)
+        Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
         df.write_csv(output_csv)
         self.logger.info("Results written to %s (%d rows)", output_csv, df.height)
 

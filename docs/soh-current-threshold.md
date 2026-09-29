@@ -1,5 +1,12 @@
 # SoH `--current-threshold` — reference & sensitivity
 
+> **Superseded.** This note describes the older difference formula
+> `soh = 100 − (soc_nominal − rolling_soc_mean)`, which read >100 % on packs
+> whose cells sit above the LUT's flat mid-SoC plateau. SoH is now a capacity
+> ratio taken only in the low-SoC knee (`--knee-soc`, `--max-top-age-hours`),
+> and the `--current-threshold` default is −20 A. See the module docstring in
+> `soc_estimation/soh_estimator.py`.
+
 This note documents how the `--current-threshold` gate behaves in the SoH
 estimators (`soc-estimate-soh`, `soc-estimate-soh-batch`) and why **−100 A is
 the recommended default**. It's backed by a real sweep on a single battery.

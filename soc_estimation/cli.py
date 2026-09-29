@@ -11,6 +11,8 @@ from soc_estimation.data_sources import AthenaDataSource, CSVDataSource
 from soc_estimation.mqtt_bem_logger import main as mqtt_bem_main
 from soc_estimation.soh_estimator import (
     DEFAULT_CURRENT_THRESHOLD,
+    DEFAULT_KNEE_SOC,
+    DEFAULT_MAX_TOP_AGE_HOURS,
     DEFAULT_TOP_OF_CHARGE_MV,
     estimate_soh,
     fetch_soh_rows,
@@ -228,6 +230,25 @@ def _add_soh_common_args(p: argparse.ArgumentParser, env_cfg) -> None:
         ),
     )
     p.add_argument(
+        "--knee-soc",
+        type=float,
+        default=DEFAULT_KNEE_SOC,
+        help=(
+            "Only discharge samples whose LUT SoC (%%) is at/below this feed the "
+            "SoH estimate — the steep low-SoC knee where the LUT is reliable. "
+            "Default %(default)s."
+        ),
+    )
+    p.add_argument(
+        "--max-top-age-hours",
+        type=float,
+        default=DEFAULT_MAX_TOP_AGE_HOURS,
+        help=(
+            "Drop samples whose q_top (full-charge) anchor is older than this, so "
+            "charge-counter drift does not inflate capacity. Default %(default)s."
+        ),
+    )
+    p.add_argument(
         "--database",
         default=env_cfg.database or "analytics",
         help="Athena database [env: ATHENA_DATABASE]",
@@ -253,7 +274,9 @@ def _add_soh_common_args(p: argparse.ArgumentParser, env_cfg) -> None:
         help="S3 URI for query results — omit to use the workgroup default [env: ATHENA_S3_OUTPUT]",
     )
     p.add_argument(
-        "--start-date", default=None, help="Only fetch rows on/after this date (YYYY-MM-DD)"
+        "--start-date",
+        default=None,
+        help="Only fetch rows on/after this date (YYYY-MM-DD)",
     )
     p.add_argument(
         "--end-date",
@@ -269,9 +292,10 @@ def create_soh_single_parser() -> argparse.ArgumentParser:
         description=(
             "Estimate per-cell State-of-Health (SoH) for one battery from AWS\n"
             "Athena, using the same parquet-LUT SoC estimator as soc-estimate-csv\n"
-            "/athena/mqtt. Compares charge-counter SoC against the LUT SoC estimate\n"
-            "on discharge samples; writes per-cell SoH over time and prints the\n"
-            "final per-cell SoH (worst cell = pack SoH)."
+            "/athena/mqtt. Estimates each cell's capacity from the charge removed\n"
+            "since full vs the LUT SoC in the low-SoC knee of discharges; writes\n"
+            "per-cell SoH over time and prints the final per-cell SoH (worst cell\n"
+            "= pack SoH)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -284,7 +308,9 @@ def create_soh_single_parser() -> argparse.ArgumentParser:
         help="Per-cell-over-time SoH output CSV (default soh_single.csv)",
     )
     p.add_argument(
-        "--log-file", default="soh_single.log", help="Log file path (default soh_single.log)"
+        "--log-file",
+        default="soh_single.log",
+        help="Log file path (default soh_single.log)",
     )
     return p
 
@@ -327,9 +353,12 @@ def run_soh_single(args: argparse.Namespace) -> None:
             num_cells=args.num_cells,
             current_threshold=args.current_threshold,
             top_of_charge_mv=args.top_of_charge_mv,
+            knee_soc=args.knee_soc,
+            max_top_age_hours=args.max_top_age_hours,
             logger=logger,
         )
         if not df_soh.is_empty():
+            Path(args.output_csv).parent.mkdir(parents=True, exist_ok=True)
             df_soh.write_csv(args.output_csv)
             logger.info("Per-cell SoH written to %s (%d rows)", args.output_csv, df_soh.height)
         else:
@@ -368,7 +397,10 @@ def create_soh_batch_parser() -> argparse.ArgumentParser:
     )
     _add_soh_common_args(p, env_cfg)
     p.add_argument(
-        "--chunk-size", type=int, default=50, help="Max serials per Athena query (default 50)"
+        "--chunk-size",
+        type=int,
+        default=50,
+        help="Max serials per Athena query (default 50)",
     )
     p.add_argument(
         "--output-csv",
@@ -376,7 +408,9 @@ def create_soh_batch_parser() -> argparse.ArgumentParser:
         help="Output summary CSV (default soh_summary.csv)",
     )
     p.add_argument(
-        "--log-file", default="soh_batch.log", help="Log file path (default soh_batch.log)"
+        "--log-file",
+        default="soh_batch.log",
+        help="Log file path (default soh_batch.log)",
     )
     return p
 
@@ -423,6 +457,8 @@ def run_soh_batch_cli(args: argparse.Namespace) -> None:
             s3_output=args.s3_output,
             current_threshold=args.current_threshold,
             top_of_charge_mv=args.top_of_charge_mv,
+            knee_soc=args.knee_soc,
+            max_top_age_hours=args.max_top_age_hours,
             chunk_size=args.chunk_size,
             start_date=args.start_date,
             end_date=args.end_date,

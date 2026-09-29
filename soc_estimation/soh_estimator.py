@@ -12,17 +12,30 @@ Algorithm
    BMS charge counters via the *q_top* algorithm: latch ``delta_charge`` while a
    cell rests at high voltage (≥3500 mV, idle, ≥10 ticks into the rest), forward
    fill it, and convert the charge removed since that top into a SoC %.
-2. **soc estimate (LUT).** Feed each (cell voltage, bucketed temperature,
-   bucketed current) sample through ``bem_estimator.estimate_cell_soc`` to get a
-   ``(soc_min, soc_max)`` bracket, then take a short rolling mean of the
-   midpoint (``rolling_soc_mean``).
-3. **soh.** On discharge samples only — ``current_average <= current_threshold``
-   (default −100 A, scaled to the 277 Ah LUT reference) — compute
+2. **soc estimate (LUT).** Feed each discharge sample's (cell voltage,
+   bucketed temperature, bucketed current) through
+   ``bem_estimator.estimate_cell_soc`` to get a ``(soc_min, soc_max)`` bracket;
+   its midpoint is ``soc_lut``.
+3. **soh (capacity ratio in the knee).** Keep discharge samples only —
+   ``current_average <= current_threshold`` (default −20 A, 277 Ah-scaled) —
+   whose ``soc_lut`` sits in the steep low-SoC knee (0 < soc_lut ≤ ``knee_soc``,
+   default 20 %) and whose q_top anchor is at most ``max_top_age_hours`` old.
+   Each sample implies a cell capacity:
 
-       soh = 100 − (soc_nominal − rolling_soc_mean)
+       capacity_ah_est = q_removed_ah / (1 − soc_lut / 100)
+       soh             = capacity_ah_est / capacity_ah × 100
 
-   then smooth (long rolling mean) and forward fill. The last forward-filled
+   then smooth (long rolling median) and forward fill. The last forward-filled
    value is that cell's reported SoH; the pack SoH is the worst (lowest) cell.
+
+Why the knee: these cells have a flat mid-SoC voltage plateau, where ~10 mV of
+sensor offset, hysteresis or LUT-shape mismatch reads as ~10 % SoC. The older
+``100 − (soc_nominal − soc_lut)`` difference was dominated by that plateau and
+routinely returned >100 %. Near empty the curve is steep, so the LUT SoC is
+trustworthy, and dividing (rather than subtracting) turns the two anchors — a
+verified full (q_top) and a well-resolved near-empty point — into capacity.
+The q_top age limit drops samples whose anchor is stale, where charge-counter
+drift would otherwise accumulate into the capacity estimate.
 
 The ``current_average`` used for both the LUT lookup and the discharge gate is
 the charge-counter-derived current (Δcharge per minute) scaled to the 277 Ah
@@ -45,12 +58,14 @@ from soc_estimation.bem_estimator import (
 )
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-# Long smoothing window for the SoH estimate (≈1 day at ~60 s/tick).
+# Long smoothing window for the SoH estimate, in qualifying knee samples.
 WINDOW_SIZE_SOH = 1441
-# Short window for the SoC-estimate midpoint before differencing against soc_nominal.
-WINDOW_SIZE_SOC = 7
-# Default discharge gate: only samples discharging at ≥100 A (277 Ah-scaled) count.
-DEFAULT_CURRENT_THRESHOLD = -100.0
+# Default discharge gate: only samples discharging at ≥20 A (277 Ah-scaled) count.
+DEFAULT_CURRENT_THRESHOLD = -20.0
+# Default knee: only samples whose LUT SoC is at/below this (%) feed the SoH estimate.
+DEFAULT_KNEE_SOC = 20.0
+# Default q_top age limit (h): samples further than this from the last top are dropped.
+DEFAULT_MAX_TOP_AGE_HOURS = 48.0
 # Default top-of-charge voltage (mV): a resting cell at/above this latches q_top.
 DEFAULT_TOP_OF_CHARGE_MV = 3500.0
 
@@ -131,8 +146,18 @@ def compute_per_cell_soc(
             .forward_fill()
             .over(["device_serial", "cell_position"])
             .alias("q_top"),
-        )
-        .drop_nulls(subset=["q_top"])
+            # sequence_number at which q_top was last latched (for anchor age)
+            pl.when(
+                (pl.col("cell_voltages") >= top_of_charge_mv)
+                & (pl.col("state") == 2)
+                & (pl.col("position_in_group") >= 10)
+            )
+            .then(pl.col("sequence_number"))
+            .otherwise(None)
+            .forward_fill()
+            .over(["device_serial", "cell_position"])
+            .alias("q_top_seq"),
+        ).drop_nulls(subset=["q_top"])
         # ── q_top_ff: never let q_top drop below delta_charge ─────────────────
         .with_columns(
             pl.max_horizontal("q_top", "delta_charge").alias("q_top_ff"),
@@ -230,25 +255,22 @@ def estimate_soc_brackets(
 
 
 # ─── Per-cell SoH pipeline ───────────────────────────────────────────────────
-def _soh_pipeline(est: pl.DataFrame, current_threshold: float) -> pl.DataFrame:
-    """Rolling SoC midpoint → discharge gate → SoH estimate, smooth, forward fill."""
+def _soh_pipeline(est: pl.DataFrame, capacity_ah: float, knee_soc: float) -> pl.DataFrame:
+    """Knee gate → capacity-ratio SoH estimate, smooth, forward fill."""
     return (
         est.drop_nulls()
         .drop_nans()
-        .with_columns(
-            rolling_soc_mean=(
-                ((pl.col("soc_max") + pl.col("soc_min")) / 2).rolling_mean(
-                    window_size=WINDOW_SIZE_SOC, min_samples=WINDOW_SIZE_SOC - 1
-                )
-            ),
-        )
-        .filter(pl.col("current_average") <= current_threshold)
-        .drop_nulls()
-        .drop_nans()
+        .with_columns(soc_lut=(pl.col("soc_max") + pl.col("soc_min")) / 2)
+        # soc_lut == 0 means the voltage fell off the bottom of the LUT (clipped)
+        .filter((pl.col("soc_lut") > 0) & (pl.col("soc_lut") <= knee_soc))
         .sort("sequence_number")
-        .with_columns(soh_estimate_raw=100 - (pl.col("soc_nominal") - pl.col("rolling_soc_mean")))
         .with_columns(
-            soh_estimate_rolling=pl.col("soh_estimate_raw").rolling_mean(
+            soh_estimate_raw=(
+                pl.col("q_removed_ah") / (1 - pl.col("soc_lut") / 100) / capacity_ah * 100
+            )
+        )
+        .with_columns(
+            soh_estimate_rolling=pl.col("soh_estimate_raw").rolling_median(
                 window_size=WINDOW_SIZE_SOH, min_samples=1
             ),
         )
@@ -265,12 +287,16 @@ def estimate_soh(
     current_threshold: float = DEFAULT_CURRENT_THRESHOLD,
     resistance_ohm: float = RESISTANCE_OHM,
     top_of_charge_mv: float = DEFAULT_TOP_OF_CHARGE_MV,
+    knee_soc: float = DEFAULT_KNEE_SOC,
+    max_top_age_hours: float = DEFAULT_MAX_TOP_AGE_HOURS,
     logger: logging.Logger | None = None,
 ) -> pl.DataFrame:
     """Estimate per-cell SoH over time for one or more batteries.
 
     ``top_of_charge_mv`` sets the resting voltage at/above which the q_top
-    reference latches (see ``compute_per_cell_soc``).
+    reference latches (see ``compute_per_cell_soc``). ``knee_soc`` is the LUT
+    SoC (%) at/below which samples count, and ``max_top_age_hours`` drops
+    samples whose q_top anchor is older than that (≈60 ticks per hour).
 
     Returns a long DataFrame — one row per qualifying (cell, tick) — with
     ``soh_estimate_ffill`` plus ``cell_number`` (1-based) and ``device_serial``.
@@ -280,10 +306,13 @@ def estimate_soh(
     df_long = prepare_long(df_raw, capacity_ah, num_cells, top_of_charge_mv)
 
     results: list[pl.DataFrame] = []
+    max_top_age_ticks = max_top_age_hours * 60
     for i in range(num_cells):
         df_cell = (
             df_long.filter(pl.col("cell_position") == i)
             .filter(pl.col("cell_voltages") > 0)
+            .filter(pl.col("current_average") <= current_threshold)
+            .filter((pl.col("sequence_number") - pl.col("q_top_seq")) <= max_top_age_ticks)
             .select(
                 "device_serial",
                 "sequence_number",
@@ -291,6 +320,7 @@ def estimate_soh(
                 "current_average",
                 "cell_voltages",
                 "soc_nominal",
+                "q_removed_ah",
                 "time_stamp",
             )
         )
@@ -298,7 +328,7 @@ def estimate_soh(
             continue
 
         est = estimate_soc_brackets(df_cell, lut, resistance_ohm)
-        cell_soh = _soh_pipeline(est, current_threshold).with_columns(
+        cell_soh = _soh_pipeline(est, capacity_ah, knee_soc).with_columns(
             pl.lit(i + 1).alias("cell_number")
         )
         if not cell_soh.is_empty():
@@ -437,6 +467,8 @@ def run_soh_batch(
     current_threshold: float = DEFAULT_CURRENT_THRESHOLD,
     resistance_ohm: float = RESISTANCE_OHM,
     top_of_charge_mv: float = DEFAULT_TOP_OF_CHARGE_MV,
+    knee_soc: float = DEFAULT_KNEE_SOC,
+    max_top_age_hours: float = DEFAULT_MAX_TOP_AGE_HOURS,
     chunk_size: int = 50,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -533,6 +565,8 @@ def run_soh_batch(
                         current_threshold=current_threshold,
                         resistance_ohm=resistance_ohm,
                         top_of_charge_mv=top_of_charge_mv,
+                        knee_soc=knee_soc,
+                        max_top_age_hours=max_top_age_hours,
                         logger=log,
                     )
                     soh_row = summarise_soh(df_soh, num_cells)
